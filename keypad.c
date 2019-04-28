@@ -28,8 +28,19 @@
 #define R3 6
 #define R4 8
 
+static int keymap[12] = { KEY_NUMERIC_1, KEY_NUMERIC_4, KEY_NUMERIC_7, KEY_NUMERIC_STAR,
+                          KEY_NUMERIC_2, KEY_NUMERIC_5, KEY_NUMERIC_8, KEY_NUMERIC_0,
+                          KEY_NUMERIC_3, KEY_NUMERIC_6, KEY_NUMERIC_9, KEY_NUMERIC_POUND };
+
 #define INIT_ROW(num, pin) \
-	gpio_request(pin, "ROW" #num); \
+    if (!gpio_is_valid(pin)) { \
+		printk(KERN_ERR "Keypad: Invalid GPIO for ROW" # num); \
+		return -1; \
+	} \
+	if (gpio_request(pin, "ROW" #num)) { \
+	    printk(KERN_ERR "Keypad: Unable to request GPIO for ROW" # num); \
+	    return -1; \
+	} \
 	gpio_direction_input(pin); \
 	gpio_set_debounce(pin, 50); \
 	/*gpio_export(pin, false);*/ \
@@ -49,7 +60,14 @@
 	gpio_free(pin);
 
 #define INIT_COL(num, pin) \
-	gpio_request(pin, "COL" #num); \
+    if (!gpio_is_valid(pin)) { \
+		printk(KERN_ERR "Keypad: Invalid GPIO for COL" # num); \
+		return -1; \
+	} \
+	if (gpio_request(pin, "COL" #num)) { \
+	    printk(KERN_ERR "Keypad: Unable to request GPIO for COL" # num); \
+	    return -1; \
+	} \
 	gpio_direction_output(pin, 1); \
 	/*gpio_export(pin, false);*/
 
@@ -75,16 +93,16 @@
 	EXIT_COL(2, C2); \
 	EXIT_COL(3, C3);
 
-#define REPORT_ROW(num, key) \
+#define REPORT_ROW(num, col) \
 	value = gpio_get_value(R ## num); \
 	pressed = pressed || value; \
-	input_report_key(keypad_dev, key, value);
+	input_report_key(keypad_dev, keymap[num + 4*col], value);
 
-#define REPORT_ROWS(key1, key2, key3, key4) \
-	REPORT_ROW(1, key1); \
-	REPORT_ROW(2, key2); \
-	REPORT_ROW(3, key3); \
-	REPORT_ROW(4, key4); \
+#define REPORT_ROWS(col) \
+	REPORT_ROW(1, col); \
+	REPORT_ROW(2, col); \
+	REPORT_ROW(3, col); \
+	REPORT_ROW(4, col); \
 
 static unsigned int irq_1;
 static unsigned int irq_2;
@@ -114,18 +132,18 @@ static void work_routine(struct work_struct *_work) {
 	gpio_set_value(C2, 0);
 	gpio_set_value(C3, 0);
 	udelay(100);
-	REPORT_ROWS(KEY_NUMERIC_1, KEY_NUMERIC_4, KEY_NUMERIC_7, KEY_NUMERIC_POUND);
-	
+	REPORT_ROWS(0);
+
 	gpio_set_value(C1, 0);
 	gpio_set_value(C2, 1);
 	udelay(100);
-	REPORT_ROWS(KEY_NUMERIC_2, KEY_NUMERIC_5, KEY_NUMERIC_8, KEY_NUMERIC_0);
-	
+	REPORT_ROWS(1);
+
 	gpio_set_value(C2, 0);
 	gpio_set_value(C3, 1);	
 	udelay(100);
-	REPORT_ROWS(KEY_NUMERIC_3, KEY_NUMERIC_6, KEY_NUMERIC_9, KEY_NUMERIC_STAR);
-	
+	REPORT_ROWS(2);
+
 	input_sync(keypad_dev);
 
 	gpio_set_value(C1, 1);
@@ -139,10 +157,6 @@ static void work_routine(struct work_struct *_work) {
 
 static int __init keypad_init(void) {
 	int rslt;
-	if (!gpio_is_valid(R1)) {
-		printk(KERN_ERR "Keypad: Invalid GPIO Number");
-		return -1;
-	}
 	INIT_COLS()
 	INIT_ROWS()
 
@@ -155,8 +169,22 @@ static int __init keypad_init(void) {
 		EXIT_COLS()
 		return -2;
 	}
+	keypad_dev->keycodemax = 12; //number of keys
+	keypad_dev->keycodesize = 1; //1 byte per key
+
 	set_bit(EV_KEY, keypad_dev->evbit); //key events only
-	set_bit(BTN_0, keypad_dev->keybit); //only 0s 
+	set_bit(KEY_NUMERIC_1, keypad_dev->keybit);
+	set_bit(KEY_NUMERIC_2, keypad_dev->keybit);
+	set_bit(KEY_NUMERIC_3, keypad_dev->keybit);
+	set_bit(KEY_NUMERIC_4, keypad_dev->keybit);
+	set_bit(KEY_NUMERIC_5, keypad_dev->keybit);
+	set_bit(KEY_NUMERIC_6, keypad_dev->keybit);
+	set_bit(KEY_NUMERIC_7, keypad_dev->keybit);
+	set_bit(KEY_NUMERIC_8, keypad_dev->keybit);
+	set_bit(KEY_NUMERIC_9, keypad_dev->keybit);
+	set_bit(KEY_NUMERIC_0, keypad_dev->keybit);
+	set_bit(KEY_NUMERIC_STAR, keypad_dev->keybit);
+	set_bit(KEY_NUMERIC_POUND, keypad_dev->keybit);
 	rslt = input_register_device(keypad_dev);
 	if (rslt) {
 		printk(KERN_ERR "Keypad: Failed to register device");
