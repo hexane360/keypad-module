@@ -10,62 +10,58 @@
 #include <linux/delay.h> //ndelay, udelay, mdelay
 #include <linux/sched.h>
 #include <linux/input.h>
-//gpio_request(num, name);
-//gpio_direction_input(num);
-//gpio_sysfs_set_active_low(num);
-//gpio_set_debounce(num, ms);
-//gpio_get_value(num);
-//gpio_export(num, bool direction_may_change);
-//gpio_direction_output(num, 0/1);
-//gpio_set_value(num, val);
-//gpio_free(num);
 
-#define C1 5
-#define C2 6
-#define C3 7
-#define R1 5
-#define R2 5
-#define R3 6
-#define R4 8
+#define C1 10
+#define C2 9
+#define C3 11
+#define R1 5 
+#define R2 6
+#define R3 13
+#define R4 19
 
-static int keymap[12] = { KEY_NUMERIC_1, KEY_NUMERIC_4, KEY_NUMERIC_7, KEY_NUMERIC_STAR,
-                          KEY_NUMERIC_2, KEY_NUMERIC_5, KEY_NUMERIC_8, KEY_NUMERIC_0,
-                          KEY_NUMERIC_3, KEY_NUMERIC_6, KEY_NUMERIC_9, KEY_NUMERIC_POUND };
+static long keymap[12] = { KEY_KP1, KEY_KP4, KEY_KP7, KEY_KPASTERISK,
+                           KEY_KP2, KEY_KP5, KEY_KP8, KEY_KP0,
+                           KEY_KP3, KEY_KP6, KEY_KP9, KEY_KPENTER }; //KPENTER instead of pound
 
 #define INIT_ROW(num, pin) \
     if (!gpio_is_valid(pin)) { \
-		printk(KERN_ERR "Keypad: Invalid GPIO for ROW" # num); \
+		printk(KERN_ERR "Keypad: Invalid GPIO " #pin " for ROW" #num); \
+                input_free_device(keypad_dev); \
 		return -1; \
 	} \
 	if (gpio_request(pin, "ROW" #num)) { \
-	    printk(KERN_ERR "Keypad: Unable to request GPIO for ROW" # num); \
+	    printk(KERN_ERR "Keypad: Unable to request GPIO " #pin " for ROW" #num); \
+            input_free_device(keypad_dev); \
 	    return -1; \
 	} \
 	gpio_direction_input(pin); \
-	gpio_set_debounce(pin, 50); \
+	gpio_set_debounce(pin, 150); \
 	/*gpio_export(pin, false);*/ \
-	irq_ ## name = gpio_to_irq(pin); \
-	rslt = request_irq(irq_ ## num, \
-		            (irq_handler_t) row_irq_handler, \
-		            IRQF_TRIGGER_RISING, \
-		            name "_irq_handler", \
-		            NULL); \
+	irq_ ##num = gpio_to_irq(pin); \
+	rslt = request_irq(irq_ ##num, \
+                           (irq_handler_t) row_irq_handler, \
+                           IRQF_TRIGGER_RISING, \
+                           "3x4 Matrix Keypad", \
+                           &keypad_dev); \
 	if (rslt) { \
 		printk(KERN_ERR "Keypad: Could not request interrupt for pin ROW" #num); \
-		return rslt; \
+		input_free_device(keypad_dev); \
+ 		return rslt; \
 	}
 
 #define EXIT_ROW(num, pin) \
-	free_irq(irq_ ## num, row_irq_handler); \
+	free_irq(irq_ ##num, &keypad_dev); \
 	gpio_free(pin);
 
 #define INIT_COL(num, pin) \
     if (!gpio_is_valid(pin)) { \
-		printk(KERN_ERR "Keypad: Invalid GPIO for COL" # num); \
+		printk(KERN_ERR "Keypad: Invalid GPIO " #pin " for COL" #num); \
+	        input_free_device(keypad_dev); \
 		return -1; \
 	} \
 	if (gpio_request(pin, "COL" #num)) { \
-	    printk(KERN_ERR "Keypad: Unable to request GPIO for COL" # num); \
+	    printk(KERN_ERR "Keypad: Unable to request GPIO " #pin " for COL" #num); \
+	    input_free_device(keypad_dev); \
 	    return -1; \
 	} \
 	gpio_direction_output(pin, 1); \
@@ -75,10 +71,10 @@ static int keymap[12] = { KEY_NUMERIC_1, KEY_NUMERIC_4, KEY_NUMERIC_7, KEY_NUMER
 	gpio_free(pin);
 
 #define INIT_ROWS() \
-	EXIT_ROW(1, R1); \
-	EXIT_ROW(2, R2); \
-	EXIT_ROW(3, R3); \
-	EXIT_ROW(4, R4);
+	INIT_ROW(1, R1); \
+	INIT_ROW(2, R2); \
+	INIT_ROW(3, R3); \
+	INIT_ROW(4, R4);
 #define INIT_COLS() \
 	INIT_COL(1, C1); \
 	INIT_COL(2, C2); \
@@ -96,7 +92,7 @@ static int keymap[12] = { KEY_NUMERIC_1, KEY_NUMERIC_4, KEY_NUMERIC_7, KEY_NUMER
 #define REPORT_ROW(num, col) \
 	value = gpio_get_value(R ## num); \
 	pressed = pressed || value; \
-	input_report_key(keypad_dev, keymap[num + 4*col], value);
+	input_report_key(keypad_dev, keymap[num-1 + 4*col], value);
 
 #define REPORT_ROWS(col) \
 	REPORT_ROW(1, col); \
@@ -108,19 +104,19 @@ static unsigned int irq_1;
 static unsigned int irq_2;
 static unsigned int irq_3;
 static unsigned int irq_4;
-static int die = 0;
+static int should_die = 0;
 static bool working = false;
 static struct workqueue_struct *keypad_wq;
 static void work_routine(struct work_struct *work);
-DECLARE_DELAYED_WORK(work, work_routine);
+DECLARE_WORK(work, work_routine);
 
 static struct input_dev *keypad_dev;
 
 static irq_handler_t row_irq_handler(unsigned int irq, void *devi_id, struct pt_regs *regs) {
-	printk(KERN_INFO "Keypad: Row interrupt");
 	if (!working) {
+		//printk(KERN_INFO "Keypad: Row interrupt");
 		working = true;
-		queue_delayed_work(keypad_wq, &work, 100); //delay in jiffies
+		queue_work(keypad_wq, &work);
 	}
 	return (irq_handler_t) IRQ_HANDLED;
 }
@@ -128,20 +124,19 @@ static irq_handler_t row_irq_handler(unsigned int irq, void *devi_id, struct pt_
 static void work_routine(struct work_struct *_work) {
 	bool pressed = false;
 	int value;
-	printk(KERN_INFO "Keypad: Work routine");
 	gpio_set_value(C2, 0);
 	gpio_set_value(C3, 0);
-	udelay(100);
+	udelay(50);
 	REPORT_ROWS(0);
 
 	gpio_set_value(C1, 0);
 	gpio_set_value(C2, 1);
-	udelay(100);
+	udelay(50);
 	REPORT_ROWS(1);
 
 	gpio_set_value(C2, 0);
 	gpio_set_value(C3, 1);	
-	udelay(100);
+	udelay(50);
 	REPORT_ROWS(2);
 
 	input_sync(keypad_dev);
@@ -149,42 +144,35 @@ static void work_routine(struct work_struct *_work) {
 	gpio_set_value(C1, 1);
 	gpio_set_value(C2, 1);
 
-	if (die || !pressed)
+	if (should_die || !pressed) {
 		working = false;
-	else
-		queue_delayed_work(keypad_wq, &work, 100); //dunno if good idea
+	} else {
+		mdelay(5);
+		queue_work(keypad_wq, &work);
+	}
 }
 
 static int __init keypad_init(void) {
 	int rslt;
-	INIT_COLS()
-	INIT_ROWS()
-
-	keypad_wq = create_singlethread_workqueue("WQsched.c");
-
+	int i = 0;
+	keypad_wq = create_singlethread_workqueue("keypadWQ");
 	keypad_dev = input_allocate_device();
 	if (!keypad_dev) {
 		printk(KERN_ERR "Keypad: Could not allocate device");
-		EXIT_ROWS()
-		EXIT_COLS()
 		return -2;
 	}
-	keypad_dev->keycodemax = 12; //number of keys
-	keypad_dev->keycodesize = 1; //1 byte per key
+	keypad_dev->name = "3x4 Matrix Keypad";
+
+	INIT_COLS()
+	INIT_ROWS()
 
 	set_bit(EV_KEY, keypad_dev->evbit); //key events only
-	set_bit(KEY_NUMERIC_1, keypad_dev->keybit);
-	set_bit(KEY_NUMERIC_2, keypad_dev->keybit);
-	set_bit(KEY_NUMERIC_3, keypad_dev->keybit);
-	set_bit(KEY_NUMERIC_4, keypad_dev->keybit);
-	set_bit(KEY_NUMERIC_5, keypad_dev->keybit);
-	set_bit(KEY_NUMERIC_6, keypad_dev->keybit);
-	set_bit(KEY_NUMERIC_7, keypad_dev->keybit);
-	set_bit(KEY_NUMERIC_8, keypad_dev->keybit);
-	set_bit(KEY_NUMERIC_9, keypad_dev->keybit);
-	set_bit(KEY_NUMERIC_0, keypad_dev->keybit);
-	set_bit(KEY_NUMERIC_STAR, keypad_dev->keybit);
-	set_bit(KEY_NUMERIC_POUND, keypad_dev->keybit);
+	for (i = 0; i < 12; i++) { //set keys we may return
+	    set_bit(keymap[i], keypad_dev->keybit);
+	}
+	/*keypad_dev->keycode = keymap; //map from scancodes to keycodes
+	keypad_dev->keycodemax = 12;
+	keypad_dev->keycodesize = sizeof(keymap[0]);*/
 	rslt = input_register_device(keypad_dev);
 	if (rslt) {
 		printk(KERN_ERR "Keypad: Failed to register device");
@@ -193,15 +181,15 @@ static int __init keypad_init(void) {
 		EXIT_COLS()
 		return rslt;
 	}
-	//task = kthread_run(keypad_thread, NULL, "keypad"); //start thread
 	printk(KERN_INFO "Keypad initalized");
 	return 0;
 }
 
 static void __exit keypad_exit(void) {
 	input_unregister_device(keypad_dev);
-	die = 1;
-	cancel_delayed_work(&work);
+	input_free_device(keypad_dev);
+	should_die = 1;
+	cancel_work_sync(&work);
 	flush_workqueue(keypad_wq);   //wait for all remaining tasks to finish
 	destroy_workqueue(keypad_wq);
 	EXIT_ROWS()
